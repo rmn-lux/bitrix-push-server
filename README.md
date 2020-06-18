@@ -11,8 +11,6 @@ The image is tested to work with *Docker Compose* and *Docker Swarm*.
 
 # How to use the image
 
-## ... on its own
-
 You have to start [Redis](https://hub.docker.com/_/redis/) first.
 
 ```console
@@ -21,57 +19,44 @@ $ docker run --name bitrix-push-server --link redis:redis -d ikarpovich/bitrix-p
 
 ## ... in [`Docker Swarm`](https://docs.docker.com/engine/reference/commandline/stack_deploy/) or via [`Docker Compose`](https://github.com/docker/compose)
 
-The example below shows traefik installed in front of the cluster
-
-```yaml
-version: '3'
-
-services:
-
-  push-server-sub:
-    image: ikarpovich/bitrix-push-server
-    links:
-      - redis
-    networks:
-      - default
-      - traefik-net
-    environment:
-      - REDIS_HOST=redis
-      - LISTEN_HOSTNAME=0.0.0.0
-      - LISTEN_PORT=80
-      - SECURITY_KEY=testtesttest
-      - MODE=sub
-    labels:
-      - traefik.port=80
-      - traefik.protocol=http
-      - traefik.frontend.rule=Host:bitrix24-sub.test
-      - traefik.docker.network=traefik-net
-      
-  push-server-pub:
-    image: ikarpovich/bitrix-push-server
-    links:
-      - redis
-    networks:
-      - default
-    environment:
-      - REDIS_HOST=redis
-      - LISTEN_HOSTNAME=0.0.0.0
-      - LISTEN_PORT=80
-      - SECURITY_KEY=testtesttest
-      - MODE=pub
-      
+```
   redis:
-    image: redis
-    networks:
-      - default      
+    image: redis:6.0.5-alpine3.12_1
+    container_name: redis
+    restart: always
+
+  push-pub:
+    image: bx-push-server:2.0_1
+    container_name: push-pub
+    environment:
+      - MODE=pub
+    depends_on:
+      - redis
+    restart: always
+
+  push-sub:
+    image: bx-push-server:2.0_1
+    container_name: push-sub
+    environment:
+      - MODE=sub
+    depends_on:
+      - redis
+    restart: always
+
+networks:
+  default:
+    external:
+      name: bx
 ```
 
-## Setup your Bitrix to support the server:
+## Настройки в административной панели Битрикс24:
 
-Message sender path: `http://push-server-pub/bitrix/pub/`
-Signature code for server interaction: `testtesttest` (your `SECURITY_KEY`)
-
-Message listener path: `http://bitrix24-sub.test/bitrix/subws/` (https:// ws:// wss://)
+- **Настройка адреса для публикации команд со стороны сервера**: 
+    - Путь для публикации команд: http://push-pub:8010/bitrix/pub/ 
+    - Код-подпись для взаимодействия с сервером: IMbEDEnTANDiSPATERSIVeRptUGht
+- **Настройка адреса для публикации команд со стороны клиента**:
+    - Путь для публикации команд (HTTP): http://push-pub:8010/bitrix/sub
+    - Путь для чтения команд (HTTPS): https://push-pub:8010/bitrix/sub
 
 # Environment variables
 
@@ -98,6 +83,43 @@ Security key, has to match one in *Push & Pull* system module settings
 ### `MODE`
 
 Mode should be either `pub` or `sub`. You have to launch two containers with each mode to work.
+
+### `NGINX conf`
+Для работы модуля Push&Pull в конфиге Nginx:
+```
+location /bitrix/pub/ {
+    # IM doesn't wait
+    proxy_ignore_client_abort on;
+    proxy_pass http://push-pub:8010;
+}
+
+location ~* ^/bitrix/subws/ {
+    access_log off;
+    proxy_pass http://push-sub:8010;
+    # http://blog.martinfjordvald.com/2013/02/websockets-in-nginx/
+    # 12h+0.5
+    proxy_max_temp_file_size 0;
+    proxy_read_timeout  43800;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $replace_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+}
+
+location ~* ^/bitrix/sub/ {
+    access_log off;
+    rewrite ^/bitrix/sub/(.*)$ /bitrix/subws/$1 break;
+    proxy_pass http://push-sub:8010;
+    proxy_max_temp_file_size 0;
+    proxy_read_timeout  43800;
+}
+
+location ~* ^/bitrix/rest/ {
+    access_log off;
+    proxy_pass http://push-pub:8010;
+    proxy_max_temp_file_size 0;
+    proxy_read_timeout  43800;
+}
+```
 
 # License
 
